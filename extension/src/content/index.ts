@@ -10,6 +10,7 @@ let sessionSpoilersHidden = 0;
 let processedCommentIds = new Set<string>();
 let cachedTranscript: TranscriptSegment[] | null = null;
 let cachedVideoId: string | null = null;
+let transcriptFailed = false; // don't retry if transcript fetch failed for this video
 let commentObserver: MutationObserver | null = null;
 
 // ── YouTube DOM helpers ────────────────────────────────────────────────────
@@ -102,6 +103,9 @@ function fetchTranscript(): Promise<TranscriptSegment[] | null> {
   if (cachedTranscript && cachedVideoId === videoId) {
     return Promise.resolve(cachedTranscript);
   }
+  if (transcriptFailed && cachedVideoId === videoId) {
+    return Promise.resolve(null); // already failed for this video, don't retry
+  }
 
   return new Promise((resolve) => {
     const handler = (e: MessageEvent) => {
@@ -112,9 +116,13 @@ function fetchTranscript(): Promise<TranscriptSegment[] | null> {
       if (e.data.segments && e.data.segments.length > 0) {
         cachedTranscript = e.data.segments;
         cachedVideoId = videoId;
+        transcriptFailed = false;
         console.log(`[Spoilerie] Got ${e.data.segments.length} transcript segments`);
         resolve(e.data.segments);
       } else {
+        cachedVideoId = videoId;
+        transcriptFailed = true;
+        console.log("[Spoilerie] No transcript found — won't retry for this video");
         resolve(null);
       }
     };
@@ -186,6 +194,7 @@ function clearAllSpoilers() {
   processedCommentIds.clear();
   cachedTranscript = null;
   cachedVideoId = null;
+  transcriptFailed = false;
 }
 
 // ── Extension context check ────────────────────────────────────────────────
