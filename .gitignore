@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.env.local
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.DS_Store
+*.log
+.vercel
+.railway
+models/*.bin
+models/*.safetensors
+training/data/raw/
+.claude/
