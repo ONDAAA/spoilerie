@@ -229,45 +229,53 @@ function injectStyles() {
   style.id = "spoilerie-styles";
   style.textContent = `
     .${PENDING_CLASS} {
-      filter: blur(4px);
+      filter: blur(5px);
       user-select: none;
       transition: filter 0.3s;
     }
     .${SAFE_CLASS} {
-      animation: spoilerie-reveal 0.4s ease;
+      animation: spoilerie-safe 0.5s ease;
     }
-    @keyframes spoilerie-reveal {
+    @keyframes spoilerie-safe {
       0% { filter: blur(4px); }
-      50% { filter: blur(0); background: rgba(34,197,94,0.08); }
-      100% { filter: none; background: transparent; }
+      30% { filter: blur(0); outline: 2px solid rgba(34,197,94,0.4); outline-offset: 2px; }
+      100% { filter: none; outline-color: transparent; }
     }
     .${SPOILER_CLASS} {
       position: relative;
-      filter: blur(4px);
+      filter: blur(5px);
       user-select: none;
       cursor: pointer;
       transition: filter 0.3s;
     }
-    .${SPOILER_CLASS}::after {
+    .spoilerie-overlay {
       position: absolute;
       inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      flex-direction: column;
-      gap: 2px;
       font-size: 12px;
+      font-family: system-ui, sans-serif;
       color: #fff;
-      background: rgba(0,0,0,0.45);
+      background: rgba(0,0,0,0.5);
       border-radius: 4px;
       pointer-events: none;
+      z-index: 10;
+      gap: 6px;
+    }
+    .spoilerie-overlay-icon {
+      font-size: 14px;
+    }
+    .spoilerie-overlay-time {
+      font-size: 11px;
+      opacity: 0.8;
     }
     .${SPOILER_CLASS}.revealed {
       filter: none;
       cursor: default;
-      animation: spoilerie-reveal 0.3s ease;
+      animation: spoilerie-safe 0.4s ease;
     }
-    .${SPOILER_CLASS}.revealed::after {
+    .${SPOILER_CLASS}.revealed .spoilerie-overlay {
       display: none;
     }
   `;
@@ -278,20 +286,18 @@ function markAsSpoiler(el: Element, estimatedTimestamp?: number) {
   if (el.classList.contains(SPOILER_CLASS)) return;
   el.classList.add(SPOILER_CLASS);
 
-  // Set the ::after content with timestamp hint
-  const timeHint = estimatedTimestamp != null
-    ? `Spoiler from ~${formatTime(estimatedTimestamp)} — click to reveal`
-    : `Spoiler detected — click to reveal`;
-  (el as HTMLElement).style.setProperty("--spoiler-text", `"\\26A0  ${timeHint}"`);
+  // Ensure parent has relative positioning for overlay
+  const parent = el.parentElement;
+  if (parent) parent.style.position = "relative";
 
-  // Use CSS custom property for ::after content
-  const styleEl = document.getElementById("spoilerie-styles");
-  if (styleEl && !styleEl.textContent?.includes("var(--spoiler-text)")) {
-    styleEl.textContent = styleEl.textContent!.replace(
-      `.${SPOILER_CLASS}::after {`,
-      `.${SPOILER_CLASS}::after { content: var(--spoiler-text, "\\26A0  Spoiler — click to reveal");`
-    );
-  }
+  // Create real DOM overlay with timestamp hint
+  const overlay = document.createElement("div");
+  overlay.className = "spoilerie-overlay";
+  overlay.innerHTML = estimatedTimestamp != null
+    ? `<span class="spoilerie-overlay-icon">\u26A0</span> Spoiler from ~${formatTime(estimatedTimestamp)} <span class="spoilerie-overlay-time">click to reveal</span>`
+    : `<span class="spoilerie-overlay-icon">\u26A0</span> Spoiler detected <span class="spoilerie-overlay-time">click to reveal</span>`;
+
+  el.appendChild(overlay);
 
   el.addEventListener("click", function reveal() {
     el.classList.add("revealed");
@@ -328,7 +334,7 @@ function revealPassedSpoilers() {
 function clearAllSpoilers() {
   document.querySelectorAll(`.${SPOILER_CLASS}, .${PENDING_CLASS}, .${SAFE_CLASS}`).forEach((el) => {
     el.classList.remove(SPOILER_CLASS, PENDING_CLASS, SAFE_CLASS, "revealed");
-    (el as HTMLElement).style.removeProperty("--spoiler-text");
+    el.querySelectorAll(".spoilerie-overlay").forEach((o) => o.remove());
   });
   sessionSpoilersHidden = 0;
   processedCommentIds.clear();
