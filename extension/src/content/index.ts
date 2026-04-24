@@ -2,6 +2,7 @@ import { Comment, AnalyzeRequest, AnalyzeResponse, TranscriptSegment } from "../
 
 const ANALYZE_INTERVAL_MS = 5000;
 const SPOILER_CLASS = "spoilerie-spoiler";
+const PENDING_CLASS = "spoilerie-pending";
 const MIN_COMMENT_LENGTH = 15;
 
 let enabled = true;
@@ -76,12 +77,17 @@ function startCommentObserver() {
   }
 
   commentObserver = new MutationObserver((mutations) => {
+    let hasNew = false;
     for (const m of mutations) {
       if (m.addedNodes.length > 0) {
-        // New comment elements added — trigger analysis on next tick
-        analyzeComments();
+        hasNew = true;
         break;
       }
+    }
+    if (hasNew) {
+      // Immediately blur all unprocessed comments (blur-first approach)
+      blurNewComments();
+      analyzeComments();
     }
   });
 
@@ -94,6 +100,34 @@ function stopCommentObserver() {
     commentObserver.disconnect();
     commentObserver = null;
   }
+}
+
+// ── Preemptive blur (blur-first, reveal-safe) ──────────────────────────────
+
+function blurNewComments() {
+  if (!cachedTranscript) return; // no transcript yet — don't blur blindly
+  const nodes = document.querySelectorAll(
+    "ytd-comment-thread-renderer #content-text"
+  );
+  nodes.forEach((el) => {
+    if (
+      !el.classList.contains(SPOILER_CLASS) &&
+      !el.classList.contains(PENDING_CLASS) &&
+      !el.classList.contains("revealed")
+    ) {
+      const text = el.textContent?.trim();
+      if (text && text.length >= MIN_COMMENT_LENGTH) {
+        const id = `c${Array.from(nodes).indexOf(el)}_${hashCode(text)}`;
+        if (!processedCommentIds.has(id)) {
+          el.classList.add(PENDING_CLASS);
+        }
+      }
+    }
+  });
+}
+
+function unblurSafe(el: Element) {
+  el.classList.remove(PENDING_CLASS);
 }
 
 // ── Transcript (received from MAIN world script via postMessage) ───────────
@@ -145,6 +179,11 @@ function injectStyles() {
   const style = document.createElement("style");
   style.id = "spoilerie-styles";
   style.textContent = `
+    .${PENDING_CLASS} {
+      filter: blur(4px);
+      user-select: none;
+      transition: filter 0.3s;
+    }
     .${SPOILER_CLASS} {
       position: relative;
       filter: blur(4px);
@@ -187,8 +226,8 @@ function markAsSpoiler(el: Element) {
 }
 
 function clearAllSpoilers() {
-  document.querySelectorAll(`.${SPOILER_CLASS}`).forEach((el) => {
-    el.classList.remove(SPOILER_CLASS, "revealed");
+  document.querySelectorAll(`.${SPOILER_CLASS}, .${PENDING_CLASS}`).forEach((el) => {
+    el.classList.remove(SPOILER_CLASS, PENDING_CLASS, "revealed");
   });
   sessionSpoilersHidden = 0;
   processedCommentIds.clear();
@@ -277,12 +316,17 @@ async function analyzeComments() {
 
     for (const result of data.results) {
       processedCommentIds.add(result.commentId);
+      const el = elementMap.get(result.commentId);
+      if (!el) continue;
+
       if (result.isSpoiler && result.confidence > 0.5) {
-        const el = elementMap.get(result.commentId);
-        if (el) {
-          markAsSpoiler(el);
-          spoilersThisRound++;
-        }
+        // Upgrade from pending blur to permanent spoiler blur
+        el.classList.remove(PENDING_CLASS);
+        markAsSpoiler(el);
+        spoilersThisRound++;
+      } else {
+        // Safe comment — remove pending blur
+        unblurSafe(el);
       }
     }
 
