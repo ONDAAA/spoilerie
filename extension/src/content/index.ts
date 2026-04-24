@@ -103,20 +103,29 @@ function startCommentObserver() {
   }
 
   commentObserver = new MutationObserver((mutations) => {
-    let hasNew = false;
+    // Only trigger on actual comment thread elements being added
+    let hasNewComment = false;
     for (const m of mutations) {
-      if (m.addedNodes.length > 0) {
-        hasNew = true;
-        break;
+      for (let i = 0; i < m.addedNodes.length; i++) {
+        const node = m.addedNodes[i];
+        if (node instanceof HTMLElement && (
+          node.tagName === "YTD-COMMENT-THREAD-RENDERER" ||
+          node.querySelector?.("ytd-comment-thread-renderer")
+        )) {
+          hasNewComment = true;
+          break;
+        }
       }
+      if (hasNewComment) break;
     }
-    if (hasNew) {
+    if (hasNewComment) {
       blurNewComments();
       if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(analyzeComments, 300);
+      debounceTimer = setTimeout(analyzeComments, 500);
     }
   });
 
+  // Only watch direct children, not deep subtree
   commentObserver.observe(target, { childList: true, subtree: true });
   console.log("[Spoilerie] Comment observer started");
 }
@@ -328,6 +337,7 @@ function clearAllSpoilers() {
   cachedVideoId = null;
   transcriptFailed = false;
   transcriptSentForVideo = null;
+  seekListenerAttached = false;
   updateBadge();
 }
 
@@ -363,17 +373,18 @@ function isExtensionAlive(): boolean {
 
 // ── Seek detection ─────────────────────────────────────────────────────────
 
+let seekListenerAttached = false;
+
 function setupSeekDetection() {
+  if (seekListenerAttached) return;
   const video = getVideoElement();
   if (!video) return;
 
   video.addEventListener("seeked", () => {
-    // User seeked — re-evaluate all spoilers immediately
     revealPassedSpoilers();
-    // Re-analyze existing comments with new currentTime
-    // (some may no longer be spoilers)
     reAnalyzeProcessedComments();
   });
+  seekListenerAttached = true;
 }
 
 function reAnalyzeProcessedComments() {
@@ -535,10 +546,23 @@ function stopLoop() {
   clearAllSpoilers();
 }
 
+// YouTube SPA navigation — fires when user clicks a video link
 document.addEventListener("yt-navigate-finish", () => {
+  console.log("[Spoilerie] SPA navigation detected");
+  stopLoop();
   clearAllSpoilers();
-  if (getVideoId()) startLoop();
-  else stopLoop();
+  if (getVideoId()) {
+    // Small delay to let YouTube's player initialize
+    setTimeout(() => startLoop(), 1500);
+  }
+});
+
+// Also handle initial page load (non-SPA) and popstate (back/forward)
+window.addEventListener("popstate", () => {
+  clearAllSpoilers();
+  if (getVideoId()) {
+    setTimeout(() => startLoop(), 1500);
+  }
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────

@@ -70,7 +70,20 @@ XMLHttpRequest.prototype.send = function (...args: any[]) {
   return originalXHRSend.apply(this, args as [body?: Document | XMLHttpRequestBodyInit | null]);
 };
 
+// Track which video the intercepted segments belong to
+let interceptedVideoUrl = location.href;
+
 console.log("[Spoilerie MAIN] Fetch/XHR interceptor installed");
+
+// ── SPA navigation: reset intercepted data when video changes ──────────────
+
+document.addEventListener("yt-navigate-finish", () => {
+  if (location.href !== interceptedVideoUrl) {
+    console.log("[Spoilerie MAIN] SPA navigation detected — resetting transcript cache");
+    interceptedSegments = null;
+    interceptedVideoUrl = location.href;
+  }
+});
 
 // ── Handle transcript requests from content script ─────────────────────────
 
