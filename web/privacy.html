@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy — Spoilerie</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #0a0a0b;
+      color: #e4e4e7;
+      line-height: 1.8;
+      -webkit-font-smoothing: antialiased;
+    }
+    .container { max-width: 700px; margin: 0 auto; padding: 48px 24px; }
+    h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    .updated { color: #71717a; font-size: 14px; margin-bottom: 32px; }
+    h2 { font-size: 18px; font-weight: 600; margin: 28px 0 12px; }
+    p, li { font-size: 15px; color: #a1a1aa; margin-bottom: 12px; }
+    ul { padding-left: 20px; }
+    a { color: #6366f1; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .back { display: inline-block; margin-bottom: 24px; font-size: 14px; color: #71717a; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <a href="/" class="back">&larr; Back to Spoilerie</a>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: April 24, 2025</p>
+
+  <h2>What Spoilerie does</h2>
+  <p>Spoilerie is a Chrome extension that detects potential spoilers in YouTube comments based on your current playback position. It does this by analyzing comment text against the video's transcript.</p>
+
+  <h2>Data we collect</h2>
+  <p>Spoilerie collects the minimum data necessary to function:</p>
+  <ul>
+    <li><strong>Comment text</strong> — visible YouTube comments are sent to our API for analysis. We do not store comment content after processing.</li>
+    <li><strong>Video ID and playback position</strong> — used to fetch the transcript and determine spoiler relevance. Not linked to your identity.</li>
+    <li><strong>Email address</strong> — only if you sign up for an account or join the waitlist.</li>
+  </ul>
+
+  <h2>Data we do NOT collect</h2>
+  <ul>
+    <li>Your YouTube account information</li>
+    <li>Your browsing history</li>
+    <li>Your watch history beyond the current video</li>
+    <li>Any personal data from YouTube</li>
+    <li>Comments you write</li>
+  </ul>
+
+  <h2>How data is processed</h2>
+  <p>Comment text and video metadata are sent to our backend API over HTTPS. The data is processed in-memory to classify spoilers and immediately discarded. We do not build user profiles, sell data, or share data with third parties.</p>
+
+  <h2>Transcript caching</h2>
+  <p>We cache video transcripts (publicly available subtitle data) on our servers to improve performance. This is public data provided by YouTube and contains no personal information.</p>
+
+  <h2>Analytics</h2>
+  <p>We may collect anonymous, aggregated usage statistics (number of requests, error rates) to improve the service. No personally identifiable information is included.</p>
+
+  <h2>Third-party services</h2>
+  <ul>
+    <li><strong>YouTube</strong> — we access publicly available transcript data via YouTube's API.</li>
+    <li><strong>Supabase</strong> — authentication and account management (if you create an account).</li>
+    <li><strong>Stripe</strong> — payment processing for Pro subscriptions (if applicable).</li>
+  </ul>
+
+  <h2>Your rights</h2>
+  <p>You can:</p>
+  <ul>
+    <li>Disable or uninstall the extension at any time</li>
+    <li>Request deletion of your account and associated data</li>
+    <li>Contact us with any privacy concerns</li>
+  </ul>
+
+  <h2>Contact</h2>
+  <p>For privacy inquiries, reach out at <a href="mailto:o.zemanek04@gmail.com">o.zemanek04@gmail.com</a>.</p>
+
+  <h2>Changes</h2>
+  <p>We may update this policy. Significant changes will be communicated via the extension or email.</p>
+</div>
+</body>
+</html>

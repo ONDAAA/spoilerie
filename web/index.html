@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spoilerie — YouTube Spoiler Protection</title>
+  <meta name="description" content="Chrome extension that hides YouTube comments containing spoilers based on your current watch position.">
+  <meta property="og:title" content="Spoilerie — YouTube Spoiler Protection">
+  <meta property="og:description" content="Never read a YouTube spoiler again. AI-powered comment filtering based on where you are in the video.">
+  <meta property="og:type" content="website">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg: #0a0a0b;
+      --surface: #141416;
+      --border: #23232a;
+      --text: #e4e4e7;
+      --text-muted: #71717a;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+      --spoiler-blur: #ef4444;
+      --safe-green: #22c55e;
+    }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Nav ── */
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px 24px;
+    }
+
+    .logo {
+      font-weight: 700;
+      font-size: 20px;
+      letter-spacing: -0.5px;
+    }
+
+    .nav-links { display: flex; gap: 24px; align-items: center; }
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 14px;
+      transition: color 0.15s;
+    }
+    .nav-links a:hover { color: var(--text); }
+
+    /* ── Hero ── */
+    .hero {
+      max-width: 800px;
+      margin: 80px auto 0;
+      padding: 0 24px;
+      text-align: center;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 100px;
+      background: rgba(99, 102, 241, 0.12);
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      font-size: clamp(36px, 6vw, 56px);
+      font-weight: 700;
+      letter-spacing: -1.5px;
+      line-height: 1.1;
+      margin-bottom: 20px;
+    }
+
+    h1 .gradient {
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .subtitle {
+      font-size: 18px;
+      color: var(--text-muted);
+      max-width: 560px;
+      margin: 0 auto 36px;
+    }
+
+    .cta-group { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 500;
+      text-decoration: none;
+      transition: all 0.15s;
+      cursor: pointer;
+      border: none;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+    }
+    .btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
+
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { border-color: var(--text-muted); }
+
+    /* ── Demo ── */
+    .demo {
+      max-width: 720px;
+      margin: 64px auto 0;
+      padding: 0 24px;
+    }
+
+    .demo-window {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .demo-bar {
+      display: flex;
+      gap: 6px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .demo-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border); }
+
+    .demo-content { padding: 24px; }
+
+    .comment {
+      padding: 12px 16px;
+      margin-bottom: 10px;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      font-size: 14px;
+      transition: all 0.3s;
+    }
+
+    .comment-header {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .comment-author { font-weight: 600; font-size: 13px; }
+    .comment-time { font-size: 12px; color: var(--text-muted); }
+
+    .comment.spoiler {
+      filter: blur(5px);
+      user-select: none;
+      position: relative;
+      border-color: rgba(239, 68, 68, 0.3);
+    }
+
+    .comment.spoiler .spoiler-badge {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      filter: none;
+      font-size: 13px;
+      font-weight: 500;
+      color: #fff;
+      background: rgba(0,0,0,0.5);
+      border-radius: 8px;
+    }
+
+    .comment.safe { border-color: rgba(34, 197, 94, 0.2); }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .tag-spoiler { background: rgba(239,68,68,0.15); color: var(--spoiler-blur); }
+    .tag-safe { background: rgba(34,197,94,0.15); color: var(--safe-green); }
+
+    /* ── How it works ── */
+    .section {
+      max-width: 1100px;
+      margin: 100px auto 0;
+      padding: 0 24px;
+    }
+
+    .section-title {
+      text-align: center;
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-bottom: 48px;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+    }
+
+    .step {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px 24px;
+    }
+
+    .step-number {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: rgba(99, 102, 241, 0.12);
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 15px;
+      margin-bottom: 16px;
+    }
+
+    .step h3 { font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+    .step p { font-size: 14px; color: var(--text-muted); }
+
+    /* ── Pricing ── */
+    .pricing {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      max-width: 700px;
+      margin: 0 auto;
+    }
+
+    .plan {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px 28px;
+    }
+
+    .plan.featured { border-color: var(--accent); }
+
+    .plan-name { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+    .plan-price { font-size: 36px; font-weight: 700; margin-bottom: 4px; }
+    .plan-price span { font-size: 16px; font-weight: 400; color: var(--text-muted); }
+    .plan-desc { font-size: 14px; color: var(--text-muted); margin-bottom: 20px; }
+
+    .plan-features { list-style: none; margin-bottom: 24px; }
+    .plan-features li {
+      font-size: 14px;
+      padding: 6px 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .plan-features li::before {
+      content: "\2713";
+      color: var(--safe-green);
+      font-weight: 700;
+    }
+
+    .plan .btn { width: 100%; justify-content: center; }
+
+    /* ── Footer ── */
+    footer {
+      max-width: 1100px;
+      margin: 100px auto 0;
+      padding: 32px 24px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    footer a { color: var(--text-muted); text-decoration: none; }
+    footer a:hover { color: var(--text); }
+
+    .footer-links { display: flex; gap: 20px; }
+
+    /* ── Waitlist form ── */
+    .waitlist {
+      max-width: 480px;
+      margin: 64px auto 0;
+      text-align: center;
+    }
+
+    .waitlist-form {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .waitlist-form input {
+      flex: 1;
+      padding: 12px 16px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+    .waitlist-form input:focus { border-color: var(--accent); }
+    .waitlist-form input::placeholder { color: var(--text-muted); }
+
+    .waitlist-msg {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--safe-green);
+      display: none;
+    }
+
+    @media (max-width: 640px) {
+      .waitlist-form { flex-direction: column; }
+      footer { flex-direction: column; gap: 16px; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">Spoilerie</div>
+  <div class="nav-links">
+    <a href="#how">How it works</a>
+    <a href="#pricing">Pricing</a>
+    <a href="https://github.com/ONDAAA/spoilerie" target="_blank">GitHub</a>
+    <a href="#waitlist" class="btn btn-primary" style="padding: 8px 16px; font-size: 13px;">Get early access</a>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="badge">AI-powered spoiler detection</div>
+  <h1>Stop reading <span class="gradient">spoilers</span> in YouTube comments</h1>
+  <p class="subtitle">Spoilerie uses AI to detect which part of the video each comment references. If you haven't watched that part yet, the comment gets hidden.</p>
+  <div class="cta-group">
+    <a href="#waitlist" class="btn btn-primary">
+      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="M12 8v4l3 3"/></svg>
+      Join waitlist
+    </a>
+    <a href="https://github.com/ONDAAA/spoilerie" target="_blank" class="btn btn-secondary">
+      <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+      View source
+    </a>
+  </div>
+</section>
+
+<!-- Demo -->
+<div class="demo">
+  <div class="demo-window">
+    <div class="demo-bar">
+      <div class="demo-dot"></div>
+      <div class="demo-dot"></div>
+      <div class="demo-dot"></div>
+    </div>
+    <div class="demo-content">
+      <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+        You're watching at <strong style="color: var(--text);">12:30</strong> of 43:00
+      </div>
+
+      <div class="comment safe">
+        <div class="comment-header">
+          <span class="comment-author">@viewer123</span>
+          <span class="tag tag-safe">SAFE</span>
+        </div>
+        Great intro, the grocery store setup is hilarious!
+      </div>
+
+      <div class="comment spoiler" style="filter: blur(5px);">
+        <div class="comment-header">
+          <span class="comment-author">@fan_2024</span>
+          <span class="tag tag-spoiler">SPOILER</span>
+        </div>
+        I can't believe Chandler quit AGAIN at the 35 minute mark...
+        <div class="spoiler-badge">Spoiler detected &mdash; click to reveal</div>
+      </div>
+
+      <div class="comment safe">
+        <div class="comment-header">
+          <span class="comment-author">@casual</span>
+          <span class="tag tag-safe">SAFE</span>
+        </div>
+        This is peak content, love the production quality
+      </div>
+
+      <div class="comment spoiler" style="filter: blur(5px);">
+        <div class="comment-header">
+          <span class="comment-author">@spoiler_andy</span>
+          <span class="tag tag-spoiler">SPOILER</span>
+        </div>
+        Chris winning the $250K was so deserved after lasting 24 hours
+        <div class="spoiler-badge">Spoiler detected &mdash; click to reveal</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- How it works -->
+<section class="section" id="how">
+  <h2 class="section-title">How it works</h2>
+  <div class="steps">
+    <div class="step">
+      <div class="step-number">1</div>
+      <h3>Reads the transcript</h3>
+      <p>Spoilerie fetches the video's subtitles and breaks them into timestamped chunks using AI embeddings.</p>
+    </div>
+    <div class="step">
+      <div class="step-number">2</div>
+      <h3>Analyzes each comment</h3>
+      <p>Every visible comment is matched against transcript chunks to estimate which part of the video it references.</p>
+    </div>
+    <div class="step">
+      <div class="step-number">3</div>
+      <h3>Hides future spoilers</h3>
+      <p>If a comment references content past your current position, it gets blurred. Click to reveal when you're ready.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Pricing -->
+<section class="section" id="pricing">
+  <h2 class="section-title">Pricing</h2>
+  <div class="pricing">
+    <div class="plan">
+      <div class="plan-name">Free</div>
+      <div class="plan-price">$0</div>
+      <div class="plan-desc">For casual YouTube watchers</div>
+      <ul class="plan-features">
+        <li>10 videos per day</li>
+        <li>English comments only</li>
+        <li>Standard detection</li>
+      </ul>
+      <a href="#waitlist" class="btn btn-secondary">Join waitlist</a>
+    </div>
+    <div class="plan featured">
+      <div class="plan-name">Pro</div>
+      <div class="plan-price">$4<span>/month</span></div>
+      <div class="plan-desc">For binge watchers and content creators</div>
+      <ul class="plan-features">
+        <li>Unlimited videos</li>
+        <li>All languages</li>
+        <li>Priority processing</li>
+        <li>API access</li>
+      </ul>
+      <a href="#waitlist" class="btn btn-primary">Join waitlist</a>
+    </div>
+  </div>
+</section>
+
+<!-- Waitlist -->
+<section class="waitlist" id="waitlist">
+  <h2 class="section-title">Get early access</h2>
+  <p style="font-size: 14px; color: var(--text-muted);">We're launching soon. Drop your email and we'll let you know.</p>
+  <form class="waitlist-form" id="waitlist-form">
+    <input type="email" placeholder="you@email.com" required id="waitlist-email">
+    <button type="submit" class="btn btn-primary">Join</button>
+  </form>
+  <p class="waitlist-msg" id="waitlist-msg">You're on the list! We'll reach out soon.</p>
+</section>
+
+<footer>
+  <div>Spoilerie &copy; 2025. Built by <a href="https://github.com/ONDAAA" target="_blank">Ondrej Zemanek</a>.</div>
+  <div class="footer-links">
+    <a href="/privacy.html">Privacy</a>
+    <a href="https://github.com/ONDAAA/spoilerie" target="_blank">GitHub</a>
+  </div>
+</footer>
+
+<script>
+  // Simple waitlist form (stores in localStorage for MVP, swap for Supabase later)
+  document.getElementById('waitlist-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const email = document.getElementById('waitlist-email').value;
+    const emails = JSON.parse(localStorage.getItem('spoilerie_waitlist') || '[]');
+    emails.push({ email, ts: new Date().toISOString() });
+    localStorage.setItem('spoilerie_waitlist', JSON.stringify(emails));
+    document.getElementById('waitlist-msg').style.display = 'block';
+    document.getElementById('waitlist-email').value = '';
+    this.querySelector('button').textContent = 'Joined!';
+    this.querySelector('button').disabled = true;
+  });
+
+  // Reveal spoilers on click in demo
+  document.querySelectorAll('.comment.spoiler').forEach(el => {
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', () => {
+      el.style.filter = 'none';
+      el.querySelector('.spoiler-badge').style.display = 'none';
+    });
+  });
+</script>
+
+</body>
+</html>
