@@ -152,10 +152,25 @@ function clearAllSpoilers() {
   cachedVideoId = null;
 }
 
+// ── Extension context check ────────────────────────────────────────────────
+
+function isExtensionAlive(): boolean {
+  try {
+    return !!chrome.runtime?.id;
+  } catch {
+    return false;
+  }
+}
+
 // ── Analysis loop ──────────────────────────────────────────────────────────
 
 async function analyzeComments() {
   if (!enabled || analyzing) return;
+  if (!isExtensionAlive()) {
+    console.log("[Spoilerie] Extension reloaded — stopping");
+    stopLoop();
+    return;
+  }
 
   const videoId = getVideoId();
   if (!videoId) return;
