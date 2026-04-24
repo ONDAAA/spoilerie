@@ -3,7 +3,9 @@ import { Comment, AnalyzeRequest, AnalyzeResponse, TranscriptSegment } from "../
 const ANALYZE_INTERVAL_MS = 5000;
 const SPOILER_CLASS = "spoilerie-spoiler";
 const PENDING_CLASS = "spoilerie-pending";
+const SAFE_CLASS = "spoilerie-safe";
 const MIN_COMMENT_LENGTH = 15;
+const TIMESTAMP_RE = /(?:^|[\s@(])(\d{1,2}):(\d{2})(?::(\d{2}))?(?=[\s,.)!?]|$)/;
 
 let enabled = true;
 let analyzing = false;
@@ -11,12 +13,12 @@ let sessionSpoilersHidden = 0;
 let processedCommentIds = new Set<string>();
 let cachedTranscript: TranscriptSegment[] | null = null;
 let cachedVideoId: string | null = null;
-let transcriptFailed = false; // don't retry if transcript fetch failed for this video
+let transcriptFailed = false;
 let commentObserver: MutationObserver | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-let transcriptSentForVideo: string | null = null; // only send transcript once per video
-// Track spoiler timestamps so we can reveal them as user progresses
-let spoilerTimestamps = new Map<Element, number>(); // element → estimatedTimestamp
+let transcriptSentForVideo: string | null = null;
+let spoilerTimestamps = new Map<Element, number>();
+let sensitivity: "low" | "medium" | "high" = "medium";
 
 // ── YouTube DOM helpers ────────────────────────────────────────────────────
 
@@ -49,10 +51,21 @@ function scrapeVisibleComments(): Comment[] {
   nodes.forEach((el, index) => {
     const text = el.textContent?.trim();
     if (!text || text.length < MIN_COMMENT_LENGTH) return;
+    // Skip emoji-only / link-only comments
+    if (isJunkComment(text)) return;
     const id = `c${index}_${hashCode(text)}`;
     comments.push({ id, text, element: el });
   });
   return comments;
+}
+
+function isJunkComment(text: string): boolean {
+  // Remove emojis and whitespace
+  const stripped = text.replace(/[\u{1F600}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F000}-\u{1FFFF}\s]/gu, "");
+  if (stripped.length < 5) return true;
+  // Link-only
+  if (/^https?:\/\/\S+$/.test(text.trim())) return true;
+  return false;
 }
 
 function hashCode(str: string): string {
@@ -63,19 +76,28 @@ function hashCode(str: string): string {
   return Math.abs(hash).toString(36);
 }
 
+// ── Timestamp detection (instant, no ML needed) ────────────────────────────
+
+function parseTimestampFromComment(text: string): number | null {
+  const match = text.match(TIMESTAMP_RE);
+  if (!match) return null;
+  if (match[3]) {
+    return parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3]);
+  }
+  return parseInt(match[1]) * 60 + parseInt(match[2]);
+}
+
 // ── MutationObserver for lazy-loaded comments ──────────────────────────────
 
 function startCommentObserver() {
   if (commentObserver) return;
 
-  // Watch the comments section for new comments being added
   const target =
     document.querySelector("ytd-comments#comments") ||
     document.querySelector("#comments") ||
     document.querySelector("ytd-item-section-renderer#sections");
 
   if (!target) {
-    // Comments section not in DOM yet — retry after a delay
     setTimeout(startCommentObserver, 2000);
     return;
   }
@@ -89,9 +111,7 @@ function startCommentObserver() {
       }
     }
     if (hasNew) {
-      // Immediately blur all unprocessed comments (blur-first approach)
       blurNewComments();
-      // Debounce analysis — YouTube adds comments in batches
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(analyzeComments, 300);
     }
@@ -111,7 +131,7 @@ function stopCommentObserver() {
 // ── Preemptive blur (blur-first, reveal-safe) ──────────────────────────────
 
 function blurNewComments() {
-  if (!cachedTranscript) return; // no transcript yet — don't blur blindly
+  if (!cachedTranscript) return;
   const nodes = document.querySelectorAll(
     "ytd-comment-thread-renderer #content-text"
   );
@@ -119,10 +139,11 @@ function blurNewComments() {
     if (
       !el.classList.contains(SPOILER_CLASS) &&
       !el.classList.contains(PENDING_CLASS) &&
+      !el.classList.contains(SAFE_CLASS) &&
       !el.classList.contains("revealed")
     ) {
       const text = el.textContent?.trim();
-      if (text && text.length >= MIN_COMMENT_LENGTH) {
+      if (text && text.length >= MIN_COMMENT_LENGTH && !isJunkComment(text)) {
         const id = `c${Array.from(nodes).indexOf(el)}_${hashCode(text)}`;
         if (!processedCommentIds.has(id)) {
           el.classList.add(PENDING_CLASS);
@@ -134,6 +155,7 @@ function blurNewComments() {
 
 function unblurSafe(el: Element) {
   el.classList.remove(PENDING_CLASS);
+  el.classList.add(SAFE_CLASS);
 }
 
 // ── Transcript (received from MAIN world script via postMessage) ───────────
@@ -144,7 +166,7 @@ function fetchTranscript(): Promise<TranscriptSegment[] | null> {
     return Promise.resolve(cachedTranscript);
   }
   if (transcriptFailed && cachedVideoId === videoId) {
-    return Promise.resolve(null); // already failed for this video, don't retry
+    return Promise.resolve(null);
   }
 
   return new Promise((resolve) => {
@@ -180,6 +202,18 @@ function fetchTranscript(): Promise<TranscriptSegment[] | null> {
 
 // ── Spoiler overlay ────────────────────────────────────────────────────────
 
+function getConfidenceThreshold(): number {
+  if (sensitivity === "low") return 0.6;
+  if (sensitivity === "high") return 0.35;
+  return 0.5; // medium
+}
+
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
 function injectStyles() {
   if (document.getElementById("spoilerie-styles")) return;
   const style = document.createElement("style");
@@ -190,20 +224,29 @@ function injectStyles() {
       user-select: none;
       transition: filter 0.3s;
     }
+    .${SAFE_CLASS} {
+      animation: spoilerie-reveal 0.4s ease;
+    }
+    @keyframes spoilerie-reveal {
+      0% { filter: blur(4px); }
+      50% { filter: blur(0); background: rgba(34,197,94,0.08); }
+      100% { filter: none; background: transparent; }
+    }
     .${SPOILER_CLASS} {
       position: relative;
       filter: blur(4px);
       user-select: none;
       cursor: pointer;
-      transition: filter 0.2s;
+      transition: filter 0.3s;
     }
     .${SPOILER_CLASS}::after {
-      content: "\\26A0  Spoiler — click to reveal";
       position: absolute;
       inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
+      flex-direction: column;
+      gap: 2px;
       font-size: 12px;
       color: #fff;
       background: rgba(0,0,0,0.45);
@@ -213,6 +256,7 @@ function injectStyles() {
     .${SPOILER_CLASS}.revealed {
       filter: none;
       cursor: default;
+      animation: spoilerie-reveal 0.3s ease;
     }
     .${SPOILER_CLASS}.revealed::after {
       display: none;
@@ -224,6 +268,22 @@ function injectStyles() {
 function markAsSpoiler(el: Element, estimatedTimestamp?: number) {
   if (el.classList.contains(SPOILER_CLASS)) return;
   el.classList.add(SPOILER_CLASS);
+
+  // Set the ::after content with timestamp hint
+  const timeHint = estimatedTimestamp != null
+    ? `Spoiler from ~${formatTime(estimatedTimestamp)} — click to reveal`
+    : `Spoiler detected — click to reveal`;
+  (el as HTMLElement).style.setProperty("--spoiler-text", `"\\26A0  ${timeHint}"`);
+
+  // Use CSS custom property for ::after content
+  const styleEl = document.getElementById("spoilerie-styles");
+  if (styleEl && !styleEl.textContent?.includes("var(--spoiler-text)")) {
+    styleEl.textContent = styleEl.textContent!.replace(
+      `.${SPOILER_CLASS}::after {`,
+      `.${SPOILER_CLASS}::after { content: var(--spoiler-text, "\\26A0  Spoiler — click to reveal");`
+    );
+  }
+
   el.addEventListener("click", function reveal() {
     el.classList.add("revealed");
     spoilerTimestamps.delete(el);
@@ -235,24 +295,31 @@ function markAsSpoiler(el: Element, estimatedTimestamp?: number) {
   sessionSpoilersHidden++;
 }
 
-/** Re-evaluate spoilers: reveal comments whose timestamp user has now passed */
 function revealPassedSpoilers() {
   const currentTime = getCurrentTime();
   if (currentTime < 0) return;
 
+  let revealed = 0;
   for (const [el, timestamp] of spoilerTimestamps) {
     if (currentTime >= timestamp) {
       el.classList.remove(SPOILER_CLASS);
       el.classList.add("revealed");
       spoilerTimestamps.delete(el);
       sessionSpoilersHidden = Math.max(0, sessionSpoilersHidden - 1);
+      revealed++;
     }
+  }
+  if (revealed > 0) {
+    console.log(`[Spoilerie] Auto-revealed ${revealed} spoilers (user passed their timestamps)`);
+    chrome.storage.local.set({ spoilersHidden: sessionSpoilersHidden });
+    updateBadge();
   }
 }
 
 function clearAllSpoilers() {
-  document.querySelectorAll(`.${SPOILER_CLASS}, .${PENDING_CLASS}`).forEach((el) => {
-    el.classList.remove(SPOILER_CLASS, PENDING_CLASS, "revealed");
+  document.querySelectorAll(`.${SPOILER_CLASS}, .${PENDING_CLASS}, .${SAFE_CLASS}`).forEach((el) => {
+    el.classList.remove(SPOILER_CLASS, PENDING_CLASS, SAFE_CLASS, "revealed");
+    (el as HTMLElement).style.removeProperty("--spoiler-text");
   });
   sessionSpoilersHidden = 0;
   processedCommentIds.clear();
@@ -261,6 +328,27 @@ function clearAllSpoilers() {
   cachedVideoId = null;
   transcriptFailed = false;
   transcriptSentForVideo = null;
+  updateBadge();
+}
+
+// ── Badge count on extension icon ──────────────────────────────────────────
+
+function updateBadge() {
+  if (!isExtensionAlive()) return;
+  try {
+    if (sessionSpoilersHidden > 0) {
+      chrome.action.setBadgeText({ text: String(sessionSpoilersHidden) });
+      chrome.action.setBadgeBackgroundColor({ color: "#ef4444" });
+    } else {
+      chrome.action.setBadgeText({ text: "" });
+    }
+  } catch {
+    // action API may not be available in content script context
+    chrome.runtime.sendMessage({
+      type: "SET_BADGE",
+      count: sessionSpoilersHidden,
+    });
+  }
 }
 
 // ── Extension context check ────────────────────────────────────────────────
@@ -271,6 +359,34 @@ function isExtensionAlive(): boolean {
   } catch {
     return false;
   }
+}
+
+// ── Seek detection ─────────────────────────────────────────────────────────
+
+function setupSeekDetection() {
+  const video = getVideoElement();
+  if (!video) return;
+
+  video.addEventListener("seeked", () => {
+    // User seeked — re-evaluate all spoilers immediately
+    revealPassedSpoilers();
+    // Re-analyze existing comments with new currentTime
+    // (some may no longer be spoilers)
+    reAnalyzeProcessedComments();
+  });
+}
+
+function reAnalyzeProcessedComments() {
+  const currentTime = getCurrentTime();
+  if (currentTime < 0) return;
+
+  // For spoilers whose timestamp is now in the past, reveal them
+  revealPassedSpoilers();
+
+  // For safe comments that were revealed, check if user seeked backwards
+  // In that case, previously safe comments might now be spoilers
+  // We'd need to re-run ML for this — mark processed as needing recheck
+  // For now, only handle forward-seek (revealing)
 }
 
 // ── Analysis loop ──────────────────────────────────────────────────────────
@@ -295,24 +411,45 @@ async function analyzeComments() {
   const allComments = scrapeVisibleComments();
   const newComments = allComments.filter((c) => !processedCommentIds.has(c.id));
 
-  // Nothing new to analyze
-  if (newComments.length === 0) {
+  if (newComments.length === 0) return;
+
+  // Phase 1: Instant timestamp-based detection (no ML, no network)
+  const commentsNeedingML: typeof newComments = [];
+  const threshold = getConfidenceThreshold();
+
+  for (const comment of newComments) {
+    const ts = parseTimestampFromComment(comment.text);
+    if (ts !== null) {
+      // Comment explicitly mentions a timestamp
+      processedCommentIds.add(comment.id);
+      comment.element.classList.remove(PENDING_CLASS);
+      if (ts > currentTime) {
+        markAsSpoiler(comment.element, ts);
+      } else {
+        unblurSafe(comment.element);
+      }
+    } else {
+      commentsNeedingML.push(comment);
+    }
+  }
+
+  if (commentsNeedingML.length === 0) {
+    updateBadge();
     return;
   }
 
+  // Phase 2: ML-based detection (send to backend)
   analyzing = true;
   try {
-    // Get transcript (cached after first fetch)
     const transcript = await fetchTranscript();
 
-    // Only send transcript on first request for this video (backend caches it)
     const includeTranscript = transcript && transcriptSentForVideo !== videoId;
 
     const body: AnalyzeRequest = {
       videoId,
       currentTime,
       videoDuration,
-      comments: newComments.map(({ id, text }) => ({ id, text })),
+      comments: commentsNeedingML.map(({ id, text }) => ({ id, text })),
       transcript: includeTranscript ? transcript : undefined,
     };
 
@@ -320,7 +457,7 @@ async function analyzeComments() {
       transcriptSentForVideo = videoId;
     }
 
-    console.log(`[Spoilerie] Analyzing ${newComments.length} comments (video=${videoId}, time=${currentTime.toFixed(0)}s, transcript=${transcript ? transcript.length + " segs" : "none"})`);
+    console.log(`[Spoilerie] Analyzing ${commentsNeedingML.length} comments (video=${videoId}, time=${currentTime.toFixed(0)}s, transcript=${includeTranscript ? "sending" : "cached"})`);
 
     const data: AnalyzeResponse & { error?: string } = await new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "API_ANALYZE", payload: body }, (response) => {
@@ -334,18 +471,21 @@ async function analyzeComments() {
 
     if (data.error) {
       console.warn(`[Spoilerie] API error: ${data.error}`);
+      // Unblur pending since we can't determine
+      commentsNeedingML.forEach((c) => unblurSafe(c.element));
       return;
     }
 
     if (!data.transcriptAvailable) {
       console.log("[Spoilerie] No transcript available for this video");
       chrome.runtime.sendMessage({ type: "STATUS_UPDATE", status: "no_transcript" });
+      commentsNeedingML.forEach((c) => unblurSafe(c.element));
       return;
     }
 
     chrome.runtime.sendMessage({ type: "STATUS_UPDATE", status: "active" });
 
-    const elementMap = new Map(newComments.map((c) => [c.id, c.element]));
+    const elementMap = new Map(commentsNeedingML.map((c) => [c.id, c.element]));
     let spoilersThisRound = 0;
 
     for (const result of data.results) {
@@ -353,21 +493,21 @@ async function analyzeComments() {
       const el = elementMap.get(result.commentId);
       if (!el) continue;
 
-      if (result.isSpoiler && result.confidence > 0.5) {
-        // Upgrade from pending blur to permanent spoiler blur
+      if (result.isSpoiler && result.confidence > threshold) {
         el.classList.remove(PENDING_CLASS);
         markAsSpoiler(el, result.estimatedTimestamp ?? undefined);
         spoilersThisRound++;
       } else {
-        // Safe comment — remove pending blur
         unblurSafe(el);
       }
     }
 
     console.log(`[Spoilerie] Found ${spoilersThisRound} spoilers in ${data.results.length} comments (total hidden: ${sessionSpoilersHidden})`);
     chrome.storage.local.set({ spoilersHidden: sessionSpoilersHidden });
+    updateBadge();
   } catch (err) {
     console.warn("[Spoilerie] analyze failed:", err);
+    commentsNeedingML.forEach((c) => unblurSafe(c.element));
   } finally {
     analyzing = false;
   }
@@ -381,10 +521,11 @@ function startLoop() {
   if (intervalId) clearInterval(intervalId);
   intervalId = setInterval(() => {
     analyzeComments();
-    revealPassedSpoilers(); // check if user has passed any spoiler timestamps
+    revealPassedSpoilers();
   }, ANALYZE_INTERVAL_MS);
   analyzeComments();
   startCommentObserver();
+  setupSeekDetection();
 }
 
 function stopLoop() {
@@ -402,10 +543,11 @@ document.addEventListener("yt-navigate-finish", () => {
 
 // ── Init ──────────────────────────────────────────────────────────────────
 
-chrome.storage.local.get(["enabled"], (result) => {
+chrome.storage.local.get(["enabled", "sensitivity"], (result) => {
   enabled = result.enabled ?? true;
+  sensitivity = result.sensitivity ?? "medium";
   injectStyles();
-  console.log("[Spoilerie] Content script loaded, enabled:", enabled);
+  console.log(`[Spoilerie] Content script loaded, enabled: ${enabled}, sensitivity: ${sensitivity}`);
   if (getVideoId()) startLoop();
 });
 
@@ -414,6 +556,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     enabled = msg.enabled;
     if (!enabled) clearAllSpoilers();
     else if (getVideoId()) startLoop();
+  }
+  if (msg.type === "SET_SENSITIVITY") {
+    sensitivity = msg.sensitivity;
   }
   if (msg.type === "GET_STATUS") {
     sendResponse({ status: getVideoId() ? "active" : "idle" });

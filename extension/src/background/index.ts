@@ -25,6 +25,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "STATUS_UPDATE" && sender.tab?.id) {
     chrome.storage.local.set({ lastStatus: msg.status });
   }
+
+  if (msg.type === "SET_BADGE") {
+    const count = msg.count || 0;
+    if (count > 0) {
+      chrome.action.setBadgeText({ text: String(count) });
+      chrome.action.setBadgeBackgroundColor({ color: "#ef4444" });
+    } else {
+      chrome.action.setBadgeText({ text: "" });
+    }
+  }
 });
 
 async function handleAnalyze(payload: unknown): Promise<unknown> {
