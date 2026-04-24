@@ -22,7 +22,7 @@
     {
       "matches": ["https://www.youtube.com/watch*"],
       "js": ["transcript-extractor.js"],
-      "run_at": "document_idle",
+      "run_at": "document_start",
       "world": "MAIN"
     }
   ],
