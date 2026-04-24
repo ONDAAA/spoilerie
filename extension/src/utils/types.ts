@@ -4,11 +4,18 @@ export interface Comment {
   element: Element;
 }
 
+export interface TranscriptSegment {
+  text: string;
+  start: number;
+  duration: number;
+}
+
 export interface AnalyzeRequest {
   videoId: string;
   currentTime: number;
   videoDuration: number;
   comments: { id: string; text: string }[];
+  transcript?: TranscriptSegment[];
 }
 
 export interface AnalyzeResult {

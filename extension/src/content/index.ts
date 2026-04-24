@@ -1,15 +1,15 @@
-import { Comment, AnalyzeRequest, AnalyzeResponse } from "../utils/types";
+import { Comment, AnalyzeRequest, AnalyzeResponse, TranscriptSegment } from "../utils/types";
 
-const DEFAULT_API_BASE = "http://localhost:8000";
 const ANALYZE_INTERVAL_MS = 5000;
 const SPOILER_CLASS = "spoilerie-spoiler";
-const MIN_COMMENT_LENGTH = 15; // skip "lol", "first", "nice" etc.
+const MIN_COMMENT_LENGTH = 15;
 
-let apiBase = DEFAULT_API_BASE;
 let enabled = true;
 let analyzing = false;
 let sessionSpoilersHidden = 0;
 let processedCommentIds = new Set<string>();
+let cachedTranscript: TranscriptSegment[] | null = null;
+let cachedVideoId: string | null = null;
 
 // ── YouTube DOM helpers ────────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ function getVideoElement(): HTMLVideoElement | null {
 
 function getCurrentTime(): number {
   const el = getVideoElement();
-  if (!el || el.readyState < 1) return -1; // not ready yet
+  if (!el || el.readyState < 1) return -1;
   return el.currentTime;
 }
 
@@ -42,7 +42,6 @@ function scrapeVisibleComments(): Comment[] {
   nodes.forEach((el, index) => {
     const text = el.textContent?.trim();
     if (!text || text.length < MIN_COMMENT_LENGTH) return;
-    // Use DOM index + text hash for stable-ish ID
     const id = `c${index}_${hashCode(text)}`;
     comments.push({ id, text, element: el });
   });
@@ -55,6 +54,44 @@ function hashCode(str: string): string {
     hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
   }
   return Math.abs(hash).toString(36);
+}
+
+// ── Transcript (received from MAIN world script via postMessage) ───────────
+
+function fetchTranscript(): Promise<TranscriptSegment[] | null> {
+  const videoId = getVideoId();
+  if (cachedTranscript && cachedVideoId === videoId) {
+    return Promise.resolve(cachedTranscript);
+  }
+
+  return new Promise((resolve) => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type !== "SPOILERIE_TRANSCRIPT") return;
+      window.removeEventListener("message", handler);
+      clearTimeout(timeout);
+
+      if (e.data.segments && e.data.segments.length > 0) {
+        cachedTranscript = e.data.segments;
+        cachedVideoId = videoId;
+        console.log(`[Spoilerie] Got ${e.data.segments.length} transcript segments`);
+        resolve(e.data.segments);
+      } else {
+        resolve(null);
+      }
+    };
+
+    window.addEventListener("message", handler);
+
+    // Ask the MAIN world script for transcript
+    window.postMessage({ type: "SPOILERIE_REQUEST_TRANSCRIPT" }, "*");
+
+    // Timeout after 8s
+    const timeout = setTimeout(() => {
+      window.removeEventListener("message", handler);
+      console.warn("[Spoilerie] Transcript fetch timed out");
+      resolve(null);
+    }, 8000);
+  });
 }
 
 // ── Spoiler overlay ────────────────────────────────────────────────────────
@@ -72,7 +109,7 @@ function injectStyles() {
       transition: filter 0.2s;
     }
     .${SPOILER_CLASS}::after {
-      content: "⚠ Spoiler — click to reveal";
+      content: "\\26A0  Spoiler — click to reveal";
       position: absolute;
       inset: 0;
       display: flex;
@@ -111,6 +148,8 @@ function clearAllSpoilers() {
   });
   sessionSpoilersHidden = 0;
   processedCommentIds.clear();
+  cachedTranscript = null;
+  cachedVideoId = null;
 }
 
 // ── Analysis loop ──────────────────────────────────────────────────────────
@@ -122,39 +161,47 @@ async function analyzeComments() {
   if (!videoId) return;
 
   const currentTime = getCurrentTime();
-  if (currentTime < 0) return; // video not ready
+  if (currentTime < 0) return;
 
   const videoDuration = getVideoDuration();
   if (videoDuration <= 0) return;
 
   const allComments = scrapeVisibleComments();
-  // Only send comments we haven't processed yet
   const newComments = allComments.filter((c) => !processedCommentIds.has(c.id));
   if (newComments.length === 0) return;
 
   analyzing = true;
   try {
+    // Get transcript from MAIN world (browser-side, no rate limits)
+    const transcript = await fetchTranscript();
+
     const body: AnalyzeRequest = {
       videoId,
       currentTime,
       videoDuration,
       comments: newComments.map(({ id, text }) => ({ id, text })),
+      transcript: transcript || undefined,
     };
 
-    const res = await fetch(`${apiBase}/analyze`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+    console.log(`[Spoilerie] Analyzing ${newComments.length} comments (video=${videoId}, time=${currentTime.toFixed(0)}s, transcript=${transcript ? transcript.length + " segs" : "none"})`);
+
+    const data: AnalyzeResponse & { error?: string } = await new Promise((resolve) => {
+      chrome.runtime.sendMessage({ type: "API_ANALYZE", payload: body }, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ error: chrome.runtime.lastError.message, results: [], transcriptAvailable: false });
+          return;
+        }
+        resolve(response);
+      });
     });
 
-    if (!res.ok) {
-      console.warn(`[Spoilerie] API returned ${res.status}`);
+    if (data.error) {
+      console.warn(`[Spoilerie] API error: ${data.error}`);
       return;
     }
 
-    const data: AnalyzeResponse = await res.json();
-
     if (!data.transcriptAvailable) {
+      console.log("[Spoilerie] No transcript available for this video");
       chrome.runtime.sendMessage({ type: "STATUS_UPDATE", status: "no_transcript" });
       return;
     }
@@ -162,15 +209,20 @@ async function analyzeComments() {
     chrome.runtime.sendMessage({ type: "STATUS_UPDATE", status: "active" });
 
     const elementMap = new Map(newComments.map((c) => [c.id, c.element]));
+    let spoilersThisRound = 0;
 
     for (const result of data.results) {
       processedCommentIds.add(result.commentId);
       if (result.isSpoiler && result.confidence > 0.5) {
         const el = elementMap.get(result.commentId);
-        if (el) markAsSpoiler(el);
+        if (el) {
+          markAsSpoiler(el);
+          spoilersThisRound++;
+        }
       }
     }
 
+    console.log(`[Spoilerie] Found ${spoilersThisRound} spoilers in ${data.results.length} comments`);
     chrome.storage.local.set({ spoilersHidden: sessionSpoilersHidden });
   } catch (err) {
     console.warn("[Spoilerie] analyze failed:", err);
@@ -203,10 +255,10 @@ document.addEventListener("yt-navigate-finish", () => {
 
 // ── Init ──────────────────────────────────────────────────────────────────
 
-chrome.storage.local.get(["enabled", "apiBase"], (result) => {
+chrome.storage.local.get(["enabled"], (result) => {
   enabled = result.enabled ?? true;
-  apiBase = result.apiBase || DEFAULT_API_BASE;
   injectStyles();
+  console.log("[Spoilerie] Content script loaded, enabled:", enabled);
   if (getVideoId()) startLoop();
 });
 
@@ -218,6 +270,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.type === "GET_STATUS") {
     sendResponse({ status: getVideoId() ? "active" : "idle" });
-    return true; // async response
+    return true;
   }
 });

@@ -55,6 +55,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         content: resolve(__dirname, "src/content/index.ts"),
+        "transcript-extractor": resolve(__dirname, "src/content/transcript-extractor.ts"),
         background: resolve(__dirname, "src/background/index.ts"),
         popup: resolve(__dirname, "src/popup/index.html"),
       },

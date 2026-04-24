@@ -28,7 +28,17 @@ function Popup() {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tab = tabs[0];
       if (!tab?.id) return;
+      // Check if we're on a YouTube video page first
+      if (!tab.url?.includes("youtube.com/watch")) {
+        setState((prev) => ({ ...prev, status: "idle" }));
+        return;
+      }
       chrome.tabs.sendMessage(tab.id, { type: "GET_STATUS" }, (response) => {
+        // Suppress "receiving end does not exist" error
+        if (chrome.runtime.lastError) {
+          setState((prev) => ({ ...prev, status: "idle" }));
+          return;
+        }
         if (response?.status) {
           setState((prev) => ({ ...prev, status: response.status }));
         }
@@ -43,7 +53,10 @@ function Popup() {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tab = tabs[0];
       if (tab?.id) {
-        chrome.tabs.sendMessage(tab.id, { type: "SET_ENABLED", enabled: next });
+        chrome.tabs.sendMessage(tab.id, { type: "SET_ENABLED", enabled: next }, () => {
+          // Suppress error if content script not loaded
+          void chrome.runtime.lastError;
+        });
       }
     });
   };

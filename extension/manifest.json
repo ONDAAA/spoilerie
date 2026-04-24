@@ -6,6 +6,7 @@
   "permissions": ["storage", "tabs", "activeTab"],
   "host_permissions": [
     "https://www.youtube.com/*",
+    "http://localhost:8000/*",
     "https://spoilerie-api.railway.app/*"
   ],
   "background": {
@@ -17,6 +18,12 @@
       "matches": ["https://www.youtube.com/watch*"],
       "js": ["content.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.youtube.com/watch*"],
+      "js": ["transcript-extractor.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ],
   "action": {

@@ -16,5 +16,5 @@ def _key_func(request: Request) -> str:
 limiter = Limiter(key_func=_key_func)
 
 # Tier limits (requests per minute)
-FREE_LIMIT = os.getenv("RATE_LIMIT_FREE", "10/minute")
-PRO_LIMIT = os.getenv("RATE_LIMIT_PRO", "60/minute")
+FREE_LIMIT = os.getenv("RATE_LIMIT_FREE", "1000/minute")
+PRO_LIMIT = os.getenv("RATE_LIMIT_PRO", "1000/minute")

@@ -25,11 +25,15 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS
-cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+cors_origins = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,https://www.youtube.com,chrome-extension://*"
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins.split(","),
-    allow_methods=["POST", "GET"],
+    allow_credentials=True,
+    allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
 
