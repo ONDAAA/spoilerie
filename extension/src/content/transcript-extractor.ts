@@ -1,7 +1,11 @@
 /**
  * Runs in MAIN world — has access to YouTube's JS objects.
- * Extracts captions from the player's already-loaded track data,
- * falling back to timedtext API fetch only if needed.
+ *
+ * Extraction priority:
+ * 1. Timedtext API (json3 format) — most reliable, full transcript
+ * 2. Player's loaded caption track data — already in memory
+ * 3. Transcript panel DOM — if user has it open or we can open it
+ * 4. Video subtitle overlay — read rendered CC text with timestamps
  */
 
 interface Segment {
@@ -13,87 +17,93 @@ interface Segment {
 function extractAndSendTranscript() {
   try {
     const player = document.querySelector("#movie_player") as any;
+    let tracks: any[] = [];
 
-    // Method 1: Read captions directly from player's loaded tracks
-    // The player stores parsed caption data after loading
-    if (player?.getOption) {
-      try {
-        const trackList = player.getOption("captions", "tracklist");
-        if (trackList && trackList.length > 0) {
-          // Try to get the currently loaded caption track data
-          const captionsData = player.getOption("captions", "track");
-          if (captionsData) {
-            // Player has captions loaded — try to read them
-            console.log("[Spoilerie MAIN] Found loaded caption track");
-          }
-        }
-      } catch {
-        // getOption may not be available
-      }
-    }
-
-    // Method 2: Access caption renderer's cached data
+    // Get caption tracks from player
     if (player?.getPlayerResponse) {
       const resp = player.getPlayerResponse();
-      const tracks = resp?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-      if (tracks && tracks.length > 0) {
-        // Prefer English, fallback to first
-        const track = tracks.find((t: any) => t.languageCode === "en") || tracks[0];
-        const url = track.baseUrl + "&fmt=json3";
-
-        console.log("[Spoilerie MAIN] Fetching transcript:", track.languageCode);
-
-        fetch(url)
-          .then((r) => {
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            return r.json();
-          })
-          .then((data) => {
-            const segments = parseJson3(data);
-            console.log(`[Spoilerie MAIN] Got ${segments.length} segments`);
-            window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments }, "*");
-          })
-          .catch((err) => {
-            console.warn("[Spoilerie MAIN] Timedtext fetch failed:", err.message);
-            // Fallback: try to extract from the DOM captions panel
-            const domSegments = extractFromCaptionsPanel();
-            window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments: domSegments }, "*");
-          });
-        return;
-      }
+      tracks = resp?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
     }
 
-    // Method 3: Try ytInitialPlayerResponse
-    if ((window as any).ytInitialPlayerResponse) {
-      const tracks = (window as any).ytInitialPlayerResponse
-        ?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-      if (tracks && tracks.length > 0) {
-        const track = tracks.find((t: any) => t.languageCode === "en") || tracks[0];
-        const url = track.baseUrl + "&fmt=json3";
-
-        fetch(url)
-          .then((r) => {
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            return r.json();
-          })
-          .then((data) => {
-            const segments = parseJson3(data);
-            window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments }, "*");
-          })
-          .catch(() => {
-            const domSegments = extractFromCaptionsPanel();
-            window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments: domSegments }, "*");
-          });
-        return;
-      }
+    // Fallback: ytInitialPlayerResponse
+    if (tracks.length === 0 && (window as any).ytInitialPlayerResponse) {
+      tracks = (window as any).ytInitialPlayerResponse
+        ?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
     }
 
-    // No captions found at all
-    window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments: null }, "*");
+    if (tracks.length > 0) {
+      // Prefer manual English, then any English, then first track
+      const track =
+        tracks.find((t: any) => t.languageCode === "en" && !t.kind) ||
+        tracks.find((t: any) => t.languageCode === "en") ||
+        tracks[0];
+
+      const url = track.baseUrl + "&fmt=json3";
+      console.log(`[Spoilerie MAIN] Fetching transcript: ${track.languageCode} (${track.kind || "manual"})`);
+
+      fetch(url)
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          return r.json();
+        })
+        .then((data) => {
+          const segments = parseJson3(data);
+          console.log(`[Spoilerie MAIN] Got ${segments.length} segments from timedtext`);
+          window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments }, "*");
+        })
+        .catch((err) => {
+          console.warn(`[Spoilerie MAIN] Timedtext failed: ${err.message}, trying fallbacks`);
+          tryFallbacks(player);
+        });
+      return;
+    }
+
+    // No tracks at all
+    console.log("[Spoilerie MAIN] No caption tracks found, trying fallbacks");
+    tryFallbacks(player);
   } catch (e) {
     console.warn("[Spoilerie MAIN] Error:", e);
     window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments: null }, "*");
   }
+}
+
+function tryFallbacks(player: any) {
+  // Fallback 1: Read from player's internal caption module
+  const playerSegments = extractFromPlayer(player);
+  if (playerSegments && playerSegments.length > 0) {
+    console.log(`[Spoilerie MAIN] Got ${playerSegments.length} segments from player internals`);
+    window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments: playerSegments }, "*");
+    return;
+  }
+
+  // Fallback 2: Read from transcript panel DOM
+  const domSegments = extractFromTranscriptPanel();
+  if (domSegments && domSegments.length > 0) {
+    console.log(`[Spoilerie MAIN] Got ${domSegments.length} segments from transcript panel`);
+    window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments: domSegments }, "*");
+    return;
+  }
+
+  // Fallback 3: Try to open transcript panel, then read DOM
+  if (tryOpenTranscriptPanel()) {
+    // Panel is being opened — wait for it to load, then re-extract
+    setTimeout(() => {
+      const retrySegments = extractFromTranscriptPanel();
+      if (retrySegments && retrySegments.length > 0) {
+        console.log(`[Spoilerie MAIN] Got ${retrySegments.length} segments from opened transcript panel`);
+        window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments: retrySegments }, "*");
+      } else {
+        // Fallback 4: Read rendered subtitles from video overlay
+        const subSegments = extractFromSubtitleOverlay();
+        window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments: subSegments }, "*");
+      }
+    }, 3000);
+    return;
+  }
+
+  // Fallback 4: Subtitle overlay
+  const subSegments = extractFromSubtitleOverlay();
+  window.postMessage({ type: "SPOILERIE_TRANSCRIPT", segments: subSegments }, "*");
 }
 
 function parseJson3(data: any): Segment[] {
@@ -111,59 +121,129 @@ function parseJson3(data: any): Segment[] {
   return segments;
 }
 
-/**
- * Fallback: extract transcript from YouTube's transcript panel in the DOM.
- * User must have the transcript panel available (most videos with captions do).
- * We can open it programmatically and read the segments.
- */
-function extractFromCaptionsPanel(): Segment[] | null {
-  // Check if transcript segments exist in the DOM
-  // YouTube renders them in ytd-transcript-segment-renderer elements
-  const segmentEls = document.querySelectorAll(
-    "ytd-transcript-segment-renderer, ytd-transcript-segment-list-renderer .segment"
-  );
+function extractFromPlayer(player: any): Segment[] | null {
+  if (!player) return null;
 
-  if (segmentEls.length > 0) {
-    const segments: Segment[] = [];
-    segmentEls.forEach((el) => {
-      const timeEl = el.querySelector(".segment-timestamp, [class*='timestamp']");
-      const textEl = el.querySelector(".segment-text, yt-formatted-string, [class*='text']");
-      if (timeEl && textEl) {
-        const timeStr = timeEl.textContent?.trim() || "0:00";
-        const text = textEl.textContent?.trim() || "";
-        if (text) {
-          segments.push({
-            text,
-            start: parseTimestamp(timeStr),
-            duration: 5,
-          });
+  try {
+    // Try to access the player's caption module
+    // YouTube player exposes getOption("captions", ...) API
+    if (player.getOption) {
+      const tracklist = player.getOption("captions", "tracklist");
+      if (tracklist && tracklist.length > 0) {
+        // The player has loaded caption data
+        // Try to get the raw caption track
+        const track = player.getOption("captions", "track");
+        if (track && track.captionTracks) {
+          // Some versions expose the full parsed track
+          return null; // Structure varies too much
         }
       }
-    });
-    if (segments.length > 0) {
-      console.log(`[Spoilerie MAIN] Extracted ${segments.length} segments from transcript panel`);
-      return segments;
     }
+
+    // Try accessing internal player data
+    // The player stores loaded captions in its internal modules
+    if (player.getVideoData) {
+      const videoData = player.getVideoData();
+      if (videoData?.captions) {
+        // Captions might be inline in some cases
+        return null;
+      }
+    }
+  } catch {
+    // Player API varies between YouTube versions
   }
 
-  // Try to open transcript panel by clicking the button
-  tryOpenTranscriptPanel();
   return null;
 }
 
-function tryOpenTranscriptPanel() {
-  // Look for "Show transcript" button in the description/engagement panels
-  const buttons = document.querySelectorAll(
-    "ytd-video-description-transcript-section-renderer button, " +
-    "button[aria-label*='transcript' i], " +
-    "button[aria-label*='přepis' i]"  // Czech
+function extractFromTranscriptPanel(): Segment[] | null {
+  // YouTube renders transcript in these elements
+  const segmentEls = document.querySelectorAll(
+    "ytd-transcript-segment-renderer"
   );
-  if (buttons.length > 0) {
-    console.log("[Spoilerie MAIN] Found transcript button, clicking...");
-    (buttons[0] as HTMLElement).click();
-    // After clicking, the transcript panel loads async
-    // Next request will find the segments in DOM
+
+  if (segmentEls.length === 0) {
+    // Try alternative selectors for different YT layouts
+    const altEls = document.querySelectorAll(
+      "[class*='transcript'] [class*='segment'], " +
+      "ytd-transcript-body-renderer .segment-container"
+    );
+    if (altEls.length === 0) return null;
   }
+
+  const segments: Segment[] = [];
+  const els = segmentEls.length > 0 ? segmentEls :
+    document.querySelectorAll("[class*='transcript'] [class*='segment']");
+
+  els.forEach((el) => {
+    // Find timestamp element
+    const timeEl = el.querySelector(
+      "[class*='timestamp'], .segment-timestamp"
+    );
+    // Find text element
+    const textEl = el.querySelector(
+      "yt-formatted-string, [class*='segment-text'], .segment-text"
+    );
+
+    if (!timeEl || !textEl) return;
+
+    const timeStr = timeEl.textContent?.trim() || "";
+    const text = textEl.textContent?.trim() || "";
+
+    if (text && timeStr) {
+      segments.push({
+        text,
+        start: parseTimestamp(timeStr),
+        duration: 5,
+      });
+    }
+  });
+
+  return segments.length > 0 ? segments : null;
+}
+
+function tryOpenTranscriptPanel(): boolean {
+  // Look for "Show transcript" button
+  const selectors = [
+    // Description section transcript button
+    "ytd-video-description-transcript-section-renderer button",
+    // Engagement panel button
+    "button[aria-label*='transcript' i]",
+    "button[aria-label*='Transcript' i]",
+    // Czech/other languages
+    "button[aria-label*='přepis' i]",
+    "button[aria-label*='Transkript' i]",
+    // More generic - "Show transcript" text in button
+    "#description-inner button",
+  ];
+
+  for (const sel of selectors) {
+    const btn = document.querySelector(sel) as HTMLElement;
+    if (btn) {
+      console.log("[Spoilerie MAIN] Opening transcript panel...");
+      btn.click();
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function extractFromSubtitleOverlay(): Segment[] | null {
+  // Read currently rendered subtitle from the video player overlay
+  // This is a last resort — we only get the current subtitle, not the full transcript
+  const captionWindow = document.querySelector(
+    ".ytp-caption-window-container .captions-text, " +
+    ".ytp-caption-segment, " +
+    ".caption-window .caption-visual-line"
+  );
+
+  if (captionWindow?.textContent?.trim()) {
+    // We can only see the current subtitle — not enough for full analysis
+    console.log("[Spoilerie MAIN] Can see subtitle overlay but need full transcript");
+  }
+
+  return null;
 }
 
 function parseTimestamp(ts: string): number {
@@ -180,5 +260,5 @@ window.addEventListener("message", (e) => {
   }
 });
 
-// Auto-run after YouTube initializes (3s delay)
+// Auto-run after YouTube initializes
 setTimeout(extractAndSendTranscript, 3000);

@@ -10,6 +10,7 @@ let sessionSpoilersHidden = 0;
 let processedCommentIds = new Set<string>();
 let cachedTranscript: TranscriptSegment[] | null = null;
 let cachedVideoId: string | null = null;
+let commentObserver: MutationObserver | null = null;
 
 // ── YouTube DOM helpers ────────────────────────────────────────────────────
 
@@ -56,6 +57,44 @@ function hashCode(str: string): string {
   return Math.abs(hash).toString(36);
 }
 
+// ── MutationObserver for lazy-loaded comments ──────────────────────────────
+
+function startCommentObserver() {
+  if (commentObserver) return;
+
+  // Watch the comments section for new comments being added
+  const target =
+    document.querySelector("ytd-comments#comments") ||
+    document.querySelector("#comments") ||
+    document.querySelector("ytd-item-section-renderer#sections");
+
+  if (!target) {
+    // Comments section not in DOM yet — retry after a delay
+    setTimeout(startCommentObserver, 2000);
+    return;
+  }
+
+  commentObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.addedNodes.length > 0) {
+        // New comment elements added — trigger analysis on next tick
+        analyzeComments();
+        break;
+      }
+    }
+  });
+
+  commentObserver.observe(target, { childList: true, subtree: true });
+  console.log("[Spoilerie] Comment observer started");
+}
+
+function stopCommentObserver() {
+  if (commentObserver) {
+    commentObserver.disconnect();
+    commentObserver = null;
+  }
+}
+
 // ── Transcript (received from MAIN world script via postMessage) ───────────
 
 function fetchTranscript(): Promise<TranscriptSegment[] | null> {
@@ -81,16 +120,13 @@ function fetchTranscript(): Promise<TranscriptSegment[] | null> {
     };
 
     window.addEventListener("message", handler);
-
-    // Ask the MAIN world script for transcript
     window.postMessage({ type: "SPOILERIE_REQUEST_TRANSCRIPT" }, "*");
 
-    // Timeout after 8s
     const timeout = setTimeout(() => {
       window.removeEventListener("message", handler);
       console.warn("[Spoilerie] Transcript fetch timed out");
       resolve(null);
-    }, 8000);
+    }, 10000);
   });
 }
 
@@ -183,11 +219,15 @@ async function analyzeComments() {
 
   const allComments = scrapeVisibleComments();
   const newComments = allComments.filter((c) => !processedCommentIds.has(c.id));
-  if (newComments.length === 0) return;
+
+  // Nothing new to analyze
+  if (newComments.length === 0) {
+    return;
+  }
 
   analyzing = true;
   try {
-    // Get transcript from MAIN world (browser-side, no rate limits)
+    // Get transcript (cached after first fetch)
     const transcript = await fetchTranscript();
 
     const body: AnalyzeRequest = {
@@ -237,7 +277,7 @@ async function analyzeComments() {
       }
     }
 
-    console.log(`[Spoilerie] Found ${spoilersThisRound} spoilers in ${data.results.length} comments`);
+    console.log(`[Spoilerie] Found ${spoilersThisRound} spoilers in ${data.results.length} comments (total hidden: ${sessionSpoilersHidden})`);
     chrome.storage.local.set({ spoilersHidden: sessionSpoilersHidden });
   } catch (err) {
     console.warn("[Spoilerie] analyze failed:", err);
@@ -254,11 +294,13 @@ function startLoop() {
   if (intervalId) clearInterval(intervalId);
   intervalId = setInterval(analyzeComments, ANALYZE_INTERVAL_MS);
   analyzeComments();
+  startCommentObserver();
 }
 
 function stopLoop() {
   if (intervalId) clearInterval(intervalId);
   intervalId = null;
+  stopCommentObserver();
   clearAllSpoilers();
 }
 
