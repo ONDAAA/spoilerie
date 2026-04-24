@@ -1,4 +1,5 @@
 import logging
+import time
 
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
@@ -6,7 +7,7 @@ from pydantic import BaseModel, Field
 from ml.cache import get_chunks
 from ml.classifier import classify_comments
 from ..rate_limit import limiter, FREE_LIMIT, PRO_LIMIT
-from ..auth import get_current_user, User, TIER_PRO
+from ..auth import get_current_user, check_usage_limit, log_usage, User, TIER_PRO
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +53,12 @@ async def analyze(request: Request, req: AnalyzeRequest):
     if not req.comments:
         raise HTTPException(status_code=400, detail="No comments provided")
 
-    # Auth + tier check
+    # Auth + tier + usage check
     user = await get_current_user(request)
     tier = user.tier if user else "free"
-    max_comments = MAX_COMMENTS_PRO if tier == TIER_PRO else MAX_COMMENTS_FREE
+    await check_usage_limit(user)
 
+    max_comments = MAX_COMMENTS_PRO if tier == TIER_PRO else MAX_COMMENTS_FREE
     if len(req.comments) > max_comments:
         req.comments = req.comments[:max_comments]
 
@@ -65,6 +67,7 @@ async def analyze(request: Request, req: AnalyzeRequest):
         req.video_id, req.current_time, len(req.comments), tier,
     )
 
+    t0 = time.monotonic()
     chunks = await get_chunks(req.video_id)
 
     if chunks is None:
@@ -87,6 +90,12 @@ async def analyze(request: Request, req: AnalyzeRequest):
         current_time=req.current_time,
         video_duration=req.video_duration,
     )
+
+    spoilers_found = sum(1 for r in raw if r.is_spoiler and r.confidence > 0.5)
+    processing_ms = int((time.monotonic() - t0) * 1000)
+
+    # Log usage (fire and forget)
+    await log_usage(user, req.video_id, len(req.comments), spoilers_found, processing_ms)
 
     return AnalyzeResponse(
         results=[
