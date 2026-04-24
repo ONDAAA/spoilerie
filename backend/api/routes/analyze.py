@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
 
-from ml.cache import get_chunks
+from ml.cache import get_chunks, store_chunks, get_chunk_embeddings
 from ml.transcript import TranscriptSegment, chunk_transcript
 from ml.classifier import classify_comments
 from ..rate_limit import limiter, FREE_LIMIT, PRO_LIMIT
@@ -73,20 +73,33 @@ async def analyze(request: Request, req: AnalyzeRequest):
 
     t0 = time.monotonic()
 
-    # Priority 1: use transcript provided by the client (browser-extracted)
-    if req.transcript and len(req.transcript) > 0:
+    # Check if we already have cached chunks + embeddings for this video
+    chunks = await get_chunks(req.video_id) if not req.transcript else None
+    cached_embs = get_chunk_embeddings(req.video_id)
+
+    if chunks and cached_embs is not None:
+        # Fast path: everything cached, only embed the new comments
+        logger.info(
+            "analyze: video=%s time=%.0f comments=%d tier=%s [CACHED]",
+            req.video_id, req.current_time, len(req.comments), tier,
+        )
+    elif req.transcript and len(req.transcript) > 0:
+        # Client provided transcript — chunk it and cache
         segments = [
             TranscriptSegment(text=s.text, start=s.start, duration=s.duration)
             for s in req.transcript
         ]
         chunks = chunk_transcript(segments)
+        store_chunks(req.video_id, chunks)
+        cached_embs = get_chunk_embeddings(req.video_id)
         logger.info(
-            "analyze: video=%s time=%.0f comments=%d tier=%s transcript=client(%d segments)",
+            "analyze: video=%s time=%.0f comments=%d tier=%s transcript=client(%d segs, now cached)",
             req.video_id, req.current_time, len(req.comments), tier, len(segments),
         )
     else:
-        # Priority 2: fetch transcript server-side (may be rate-limited)
+        # Fetch server-side
         chunks = await get_chunks(req.video_id)
+        cached_embs = get_chunk_embeddings(req.video_id) if chunks else None
         logger.info(
             "analyze: video=%s time=%.0f comments=%d tier=%s transcript=%s",
             req.video_id, req.current_time, len(req.comments), tier,
@@ -112,6 +125,7 @@ async def analyze(request: Request, req: AnalyzeRequest):
         chunks=chunks,
         current_time=req.current_time,
         video_duration=req.video_duration,
+        chunk_embeddings=cached_embs,
     )
 
     spoilers_found = sum(1 for r in raw if r.is_spoiler and r.confidence > 0.5)

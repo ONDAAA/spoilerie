@@ -14,7 +14,6 @@ import numpy as np
 from .transcript import TranscriptChunk
 from .embedder import embed, cosine_similarity_matrix
 
-# Confidence threshold below which we do NOT mark as spoiler (avoids false positives)
 MIN_CONFIDENCE = 0.35
 
 
@@ -31,6 +30,7 @@ def classify_comments(
     chunks: list[TranscriptChunk],
     current_time: float,
     video_duration: float,
+    chunk_embeddings: Optional[np.ndarray] = None,
 ) -> list[ClassificationResult]:
     if not chunks or not comments:
         return [
@@ -38,13 +38,15 @@ def classify_comments(
             for id, _ in comments
         ]
 
+    # Only embed comments — chunk embeddings are cached
     comment_texts = [text for _, text in comments]
-    chunk_texts = [c.text for c in chunks]
+    comment_embs = embed(comment_texts)  # (N, D) — this is fast (few comments)
 
-    comment_embs = embed(comment_texts)        # (N, D)
-    chunk_embs = embed(chunk_texts)            # (M, D)
+    if chunk_embeddings is None:
+        chunk_texts = [c.text for c in chunks]
+        chunk_embeddings = embed(chunk_texts)  # (M, D) — slow, but only if not cached
 
-    sim_matrix = cosine_similarity_matrix(comment_embs, chunk_embs)  # (N, M)
+    sim_matrix = cosine_similarity_matrix(comment_embs, chunk_embeddings)  # (N, M)
 
     results = []
     for i, (comment_id, _) in enumerate(comments):
@@ -53,7 +55,6 @@ def classify_comments(
         best_chunk = chunks[best_chunk_idx]
         estimated_ts = (best_chunk.start + best_chunk.end) / 2
 
-        # Heuristic: very short comments ("lol", "nice") match poorly → skip
         if confidence < MIN_CONFIDENCE:
             results.append(ClassificationResult(comment_id, None, False, confidence))
             continue

@@ -13,6 +13,8 @@ let cachedTranscript: TranscriptSegment[] | null = null;
 let cachedVideoId: string | null = null;
 let transcriptFailed = false; // don't retry if transcript fetch failed for this video
 let commentObserver: MutationObserver | null = null;
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let transcriptSentForVideo: string | null = null; // only send transcript once per video
 // Track spoiler timestamps so we can reveal them as user progresses
 let spoilerTimestamps = new Map<Element, number>(); // element → estimatedTimestamp
 
@@ -89,7 +91,9 @@ function startCommentObserver() {
     if (hasNew) {
       // Immediately blur all unprocessed comments (blur-first approach)
       blurNewComments();
-      analyzeComments();
+      // Debounce analysis — YouTube adds comments in batches
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(analyzeComments, 300);
     }
   });
 
@@ -256,6 +260,7 @@ function clearAllSpoilers() {
   cachedTranscript = null;
   cachedVideoId = null;
   transcriptFailed = false;
+  transcriptSentForVideo = null;
 }
 
 // ── Extension context check ────────────────────────────────────────────────
@@ -300,13 +305,20 @@ async function analyzeComments() {
     // Get transcript (cached after first fetch)
     const transcript = await fetchTranscript();
 
+    // Only send transcript on first request for this video (backend caches it)
+    const includeTranscript = transcript && transcriptSentForVideo !== videoId;
+
     const body: AnalyzeRequest = {
       videoId,
       currentTime,
       videoDuration,
       comments: newComments.map(({ id, text }) => ({ id, text })),
-      transcript: transcript || undefined,
+      transcript: includeTranscript ? transcript : undefined,
     };
+
+    if (includeTranscript) {
+      transcriptSentForVideo = videoId;
+    }
 
     console.log(`[Spoilerie] Analyzing ${newComments.length} comments (video=${videoId}, time=${currentTime.toFixed(0)}s, transcript=${transcript ? transcript.length + " segs" : "none"})`);
 
