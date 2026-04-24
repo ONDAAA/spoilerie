@@ -13,6 +13,8 @@ let cachedTranscript: TranscriptSegment[] | null = null;
 let cachedVideoId: string | null = null;
 let transcriptFailed = false; // don't retry if transcript fetch failed for this video
 let commentObserver: MutationObserver | null = null;
+// Track spoiler timestamps so we can reveal them as user progresses
+let spoilerTimestamps = new Map<Element, number>(); // element → estimatedTimestamp
 
 // ── YouTube DOM helpers ────────────────────────────────────────────────────
 
@@ -215,14 +217,33 @@ function injectStyles() {
   document.head.appendChild(style);
 }
 
-function markAsSpoiler(el: Element) {
+function markAsSpoiler(el: Element, estimatedTimestamp?: number) {
   if (el.classList.contains(SPOILER_CLASS)) return;
   el.classList.add(SPOILER_CLASS);
   el.addEventListener("click", function reveal() {
     el.classList.add("revealed");
+    spoilerTimestamps.delete(el);
     el.removeEventListener("click", reveal);
   });
+  if (estimatedTimestamp != null) {
+    spoilerTimestamps.set(el, estimatedTimestamp);
+  }
   sessionSpoilersHidden++;
+}
+
+/** Re-evaluate spoilers: reveal comments whose timestamp user has now passed */
+function revealPassedSpoilers() {
+  const currentTime = getCurrentTime();
+  if (currentTime < 0) return;
+
+  for (const [el, timestamp] of spoilerTimestamps) {
+    if (currentTime >= timestamp) {
+      el.classList.remove(SPOILER_CLASS);
+      el.classList.add("revealed");
+      spoilerTimestamps.delete(el);
+      sessionSpoilersHidden = Math.max(0, sessionSpoilersHidden - 1);
+    }
+  }
 }
 
 function clearAllSpoilers() {
@@ -231,6 +252,7 @@ function clearAllSpoilers() {
   });
   sessionSpoilersHidden = 0;
   processedCommentIds.clear();
+  spoilerTimestamps.clear();
   cachedTranscript = null;
   cachedVideoId = null;
   transcriptFailed = false;
@@ -322,7 +344,7 @@ async function analyzeComments() {
       if (result.isSpoiler && result.confidence > 0.5) {
         // Upgrade from pending blur to permanent spoiler blur
         el.classList.remove(PENDING_CLASS);
-        markAsSpoiler(el);
+        markAsSpoiler(el, result.estimatedTimestamp ?? undefined);
         spoilersThisRound++;
       } else {
         // Safe comment — remove pending blur
@@ -345,7 +367,10 @@ let intervalId: ReturnType<typeof setInterval> | null = null;
 
 function startLoop() {
   if (intervalId) clearInterval(intervalId);
-  intervalId = setInterval(analyzeComments, ANALYZE_INTERVAL_MS);
+  intervalId = setInterval(() => {
+    analyzeComments();
+    revealPassedSpoilers(); // check if user has passed any spoiler timestamps
+  }, ANALYZE_INTERVAL_MS);
   analyzeComments();
   startCommentObserver();
 }
